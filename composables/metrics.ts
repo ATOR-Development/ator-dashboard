@@ -47,13 +47,44 @@ export interface VerificationResultDto {
   relay: ValidatedRelay
 }
 
+export type MetricsEntityType = 'validation/stats' | 'relay/metrics'
+
+type ResolveMetricsEntityType<
+  MET extends MetricsEntityType
+> = MET extends 'validation/stats'
+  ? ValidationStats
+  : MET extends 'relay/metrics'
+    ? VerificationResultDto[]
+    : never
+
+class MetricsEntityCache<MET extends MetricsEntityType> {
+  public stats: {
+    stats: ResolveMetricsEntityType<MET>,
+    timestamp: Date
+  }[] = []
+
+  push(stats: ResolveMetricsEntityType<MET>, timestamp: Date) {
+    this.stats.push({ stats, timestamp })
+    this.stats.sort((a, b) => {
+      if (a.timestamp > b.timestamp) { return -1 }
+      if (a.timestamp < b.timestamp) { return 1 }
+      return 0
+    })
+  }
+
+  get latest() {
+    return this.stats.some(s => !!s) ? this.stats[0] : null
+  }
+}
+
 export class RelayMetrics {
   metricsDeployer!: string
   gateway!: string
-  validationStats: ValidationStats | null = null
-  validationStatsTimestamp: Date | null = null
-  relayMetrics: VerificationResultDto[] = []
-  relayMetricsTimestamp: Date | null = null
+
+  metrics: { [MET in MetricsEntityType]: MetricsEntityCache<MET> } = {
+    'relay/metrics': new MetricsEntityCache<'relay/metrics'>,
+    'validation/stats': new MetricsEntityCache<'validation/stats'>
+  }
 
   constructor(
     gateway: string,
@@ -64,75 +95,67 @@ export class RelayMetrics {
   }
 
   async refresh() {
-    await this.refreshValidationStats()
-    await this.refreshRelayMetrics()
+    await this.refreshMetricsEntity('validation/stats')
+    await this.refreshMetricsEntity('relay/metrics')
   }
 
-  private async refreshValidationStats() {
-    const tx: ArdbTransaction | null = await ardb
-      .search('transactions')
-      .from(this.metricsDeployer)
-      .tags([
-        { name: 'Protocol', values: 'ator' },
-        { name: 'Entity-Type', values: 'validation/stats' }
-      ])
-      .sort('HEIGHT_DESC')
-      .findOne() as ArdbTransaction | null
-  
-    if (tx) {
-      try {
-        let validationStats = await getTransactionData(tx.id)
+  private async fetchTxData(txid: string): Promise<any> {
+    const cachedData = await getTransactionData(txid)
 
-        if (!validationStats) {
-          validationStats = await $fetch<ValidationStats>(`${this.gateway}/${tx.id}`)
-          await saveTransactionData(tx.id, validationStats)
-        }
-  
-        this.validationStats = validationStats
-      } catch (error) {
-        console.error('Could not fetch validation/stats tx', error)
-      }
-
-      const timestamp = parseInt(tx.tags.find(tag => tag.name === 'Content-Timestamp')?.value || '')
-      if (!Number.isNaN(timestamp)) {
-        this.validationStatsTimestamp = new Date(timestamp)
-      }
-    } else {
-      console.error('Could not find validation/stats tx')
+    if (cachedData) {
+      return cachedData
     }
+
+    const fetchedData = await $fetch(`${this.gateway}/${txid}`)
+    await saveTransactionData(txid, fetchedData)
+
+    return fetchedData
   }
 
-  private async refreshRelayMetrics() {
-    const tx: ArdbTransaction | null = await ardb
-      .search('transactions')
-      .from(this.metricsDeployer)
-      .tags([
-        { name: 'Protocol', values: 'ator' },
-        { name: 'Entity-Type', values: 'relay/metrics' }
-      ])
-      .sort('HEIGHT_DESC')
-      .findOne() as ArdbTransaction | null
+  private async refreshMetricsEntity(
+    metricsEntityType: MetricsEntityType,
+    limit = 5
+  ) {
+    const refresh = async (metricsEntityType: MetricsEntityType) => {
+      const txs: ArdbTransaction[] = await ardb
+        .search('transactions')
+        .from(this.metricsDeployer)
+        .tags([
+          { name: 'Protocol', values: 'ator' },
+          { name: 'Entity-Type', values: metricsEntityType }
+        ])
+        .sort('HEIGHT_DESC')
+        .limit(limit)
+        .find() as ArdbTransaction[]
+      
+      if (txs.length < 1) {
+        console.error(`Could not find any tx for ${metricsEntityType}`)
+      }
+      
+      for (let i = 0; i < txs.length; i++) {
+        const tx = txs[i]
+        const stats = await this.fetchTxData(tx.id)
+        const timestamp = parseInt(
+          tx.tags.find(tag => tag.name === 'Content-Timestamp')?.value || ''
+        )
 
-    if (tx) {
-      try {
-        let relayMetrics = await getTransactionData(tx.id)
-
-        if (!relayMetrics) {
-          relayMetrics = await $fetch<VerificationResultDto[]>(`${this.gateway}/${tx.id}`)
-          await saveTransactionData(tx.id, relayMetrics)
+        if (!Number.isNaN(timestamp)) {
+          this.metrics[metricsEntityType].push(stats, new Date(timestamp))
+        } else {
+          console.error(
+            `Invalid Content-Timestamp for tx ${metricsEntityType} ${tx.id}`
+          )
         }
-  
-        this.relayMetrics = relayMetrics
-      } catch (error) {
-        console.error('Could not fetch relay/metrics tx', error)
       }
+    }
 
-      const timestamp = parseInt(tx.tags.find(tag => tag.name === 'Content-Timestamp')?.value || '')
-      if (!Number.isNaN(timestamp)) {
-        this.relayMetricsTimestamp = new Date(timestamp)
-      }
-    } else {
-      console.error('Could not find relay/metrics tx')
+    switch (metricsEntityType) {
+      case 'relay/metrics':
+      case 'validation/stats':
+        await refresh(metricsEntityType)
+        break
+      default:
+        throw new Error('Invalid MetricsEntityType')
     }
   }
 }
@@ -140,7 +163,10 @@ export class RelayMetrics {
 export const useRelayMetrics = async () => {
   const { arweave } = useAppConfig()
   const runtimeConfig = useRuntimeConfig()
-  const metrics = new RelayMetrics(arweave.gateway, runtimeConfig.public.metricsDeployer)
+  const metrics = new RelayMetrics(
+    arweave.gateway,
+    runtimeConfig.public.metricsDeployer
+  )
 
   await metrics.refresh()
 

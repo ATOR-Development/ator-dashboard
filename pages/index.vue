@@ -34,16 +34,27 @@
           </v-card>
         </v-col>
       </v-row>
-      <v-row v-if="stats && stats.timestamp">
+      <v-row v-if="stats && stats.validation && stats.validation.latest">
         <v-col cols="12">
-          <span class="text-caption">Last Updated: {{ stats.timestamp.toUTCString() }}</span>
+          <span class="text-caption">
+            Last Updated: {{ stats.validation.latest.timestamp.toUTCString() }}
+          </span>
         </v-col>
+      </v-row>
+      <v-row>
+        <svg :width="width" :height="height">
+          <!-- <path fill="none" stroke="rgb(3,190,197)" stroke-width="1.5" :d="validationStatsOverTime.observedBandwidth.line()" />
+          <g>
+
+          </g> -->
+        </svg>
       </v-row>
     </v-container>
   </div>
 </template>
 
 <script setup lang="ts">
+import * as d3 from 'd3'
 import { useRelayRegistry } from '~~/composables'
 
 useHead({ title: 'Dashboard' })
@@ -52,8 +63,8 @@ const { data: stats } = useLazyAsyncData('ator-stats', async () => {
   const registry = await useRelayRegistry()
   const relays = await registry.verified()
   const relayMetrics = await useRelayMetrics()
-
-  const { validationStats, validationStatsTimestamp: timestamp } = relayMetrics
+  
+  const { metrics: { 'validation/stats': validation } } = relayMetrics
   const verified = Object.keys(relays)
   const users = verified
     // reduce to relay owner addresses
@@ -61,41 +72,79 @@ const { data: stats } = useLazyAsyncData('ator-stats', async () => {
     // ensure user address list is unique
     .filter((addr, i, addrs) => addrs.indexOf(addr) === i)
 
-  return { relays, users, verified, validationStats, timestamp }
+  return { relays, users, verified, validation }
 })
 
+const width = 400
+const height = 100
+
+// const validationStatsOverTime = computed(() => {
+//   const validationStats = stats.value && stats.value.validation
+//     ? stats.value.validation.stats
+//     : []
+
+//   const observedBandwidthData = validationStats.map(vs => { return { timestamp: vs.timestamp, observedBandwidth: vs.stats.verified_and_running.observed_bandwidth } })
+//   const observedBandwidthX = d3.scaleTime()
+//     .domain([
+//       observedBandwidthData[0].timestamp,
+//       observedBandwidthData[observedBandwidthData.length - 1].timestamp
+//     ])
+//     .rangeRound([0, width])
+//   const observedBandwidthY = d3.scaleLinear()
+//     .domain([
+//       observedBandwidthData[0].observedBandwidth,
+//       observedBandwidthData[observedBandwidthData.length - 1].observedBandwidth
+//     ])
+//     .rangeRound([height, 0])
+//   const observedBandwidthLine = d3.line((d, i) => observedBandwidthX(i), observedBandwidthY)
+  
+//   const observedBandwidth = {
+//     x: observedBandwidthX,
+//     y: observedBandwidthY,
+//     line: observedBandwidthLine(observedBandwidthData)
+//   }
+
+//   return { observedBandwidth }
+// })
+
 const topCards = computed(() => {
-  const atorRunningObservedBandwidth =
-  stats.value?.validationStats?.verified_and_running.observed_bandwidth
-  ? (
-      stats.value.validationStats.verified_and_running.observed_bandwidth
-      / Math.pow(1024, 2)
-    ).toFixed(3)
-  : ''
+  const { latest } = stats.value && stats.value.validation.latest
+    ? stats.value.validation
+    : { latest: null }
+  const totalUsers = stats.value?.users?.length || ''
+  const verifiedRelays = stats.value?.verified?.length || ''
+  const activeRelays =
+    stats.value?.validation.latest?.stats.verification.running || ''
+  const observedBandwidth = latest
+    ? (
+        latest.stats.verified_and_running.observed_bandwidth
+        / Math.pow(1024, 2)
+      ).toFixed(3) + ' MiB/s'
+    : ''
 
   return [
     {
       key: 'total-users',
       label: 'Total Users',
-      value: stats.value?.users?.length || '',
+      value: totalUsers,
       icon: 'mdi-crowd'
     },
     {
       key: 'verified-relays',
       label: 'Verified Relays',
-      value: stats.value?.verified?.length || '',
+      value: verifiedRelays,
       icon: 'mdi-lifebuoy'
     },
     {
       key: 'active-relays',
       label: 'Active Relays',
-      value: stats.value?.validationStats?.verification.running || '',
+      value: activeRelays,
       icon: 'mdi-transit-connection'
     },
     {
       key: 'observed-bandwidth',
       label: 'Observed Bandwidth',
-      value: atorRunningObservedBandwidth ? atorRunningObservedBandwidth + ' MiB/s' : '',
+      value: observedBandwidth,
       icon: 'mdi-speedometer'
     }
   ]

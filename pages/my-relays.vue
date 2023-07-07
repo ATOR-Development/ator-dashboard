@@ -115,17 +115,20 @@ const {
 } = useLazyAsyncData('my-relays', async () => {
   const registry = await useRelayRegistry()
   const signer = await useSigner()
-  const metrics = await useRelayMetrics()
+  const relayMetrics = await useRelayMetrics()
+  const latestRelayMetrics = relayMetrics.metrics['relay/metrics'].latest
 
-  if (registry && signer) {
+  if (signer && latestRelayMetrics) {
     try {
       const claimable = await registry.claimable(signer.address)
       const verifiedRelays = await registry.verified(signer.address)
-
+      const { stats, timestamp } = latestRelayMetrics
+      
       const verified = verifiedRelays
         .map(
           fp => {
-            const myMetrics = metrics.relayMetrics.find(({ relay }) => fp === relay.fingerprint)
+            const myMetrics =
+              stats.find(({ relay }) => fp === relay.fingerprint)
 
             return myMetrics
               ? myMetrics.relay
@@ -133,7 +136,7 @@ const {
           }
         )
 
-      return { claimable, verified, timestamp: metrics.relayMetricsTimestamp }
+      return { claimable, verified, timestamp }
     } catch (error) {
       console.log('error reading relay registry contract', error)
     }
